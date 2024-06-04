@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import time
+from typing import Union
 from json import JSONDecodeError
 
 import requests
@@ -147,7 +148,7 @@ def check_response(response: dict):
         )
 
 
-def parse_status(homework: dict) -> str | None:
+def parse_status(homework: dict) -> Union[str, None]:
     """
     Парсит статус домашней работы.
     :param homework: Данные последнего ДЗ.
