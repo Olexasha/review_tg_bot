@@ -174,7 +174,6 @@ def parse_status(homework: dict) -> str | None:
 
 def main():
     """Основная логика работы бота."""
-
     check_tokens()
     # Создаем объект класса бота
     bot = TeleBot(token=TELEGRAM_TOKEN)
