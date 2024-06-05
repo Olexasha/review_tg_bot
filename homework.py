@@ -1,9 +1,9 @@
 import logging
 import os
-import sys
 import time
-from typing import Union
 from json import JSONDecodeError
+from logging.handlers import RotatingFileHandler
+from typing import Union
 
 import requests
 from dotenv import load_dotenv
@@ -36,15 +36,22 @@ HOMEWORK_VERDICTS = {
 }
 LAST_HOMEWORK_STATUS = None
 
-# Настройка логгера
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-handler = logging.StreamHandler(stream=sys.stdout)
-formatter = logging.Formatter(
-    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+
+def error_dispatcher(
+    msg: str, error=Exception, critical: bool = False
+) -> None:
+    """
+    Обработчик ошибок. Логирует ошибку и выбрасывает исключение.
+    :param msg: Сообщение об ошибке.
+    :param error: Сама ошибка.
+    :param critical: Логировать ли критическую ошибку.
+    :raises error: Выбрасывается передаваемое исключение.
+    """
+    if critical:
+        logging.critical(msg)
+        raise error(msg)
+    logging.error(msg)
+    raise error(msg)
 
 
 def check_tokens() -> None:
@@ -52,13 +59,18 @@ def check_tokens() -> None:
     Проверяет наличие обязательных переменных окружения.
     :raises EnvVarsNotSetError: Если нет обязательных переменных окружения.
     """
-    if not all((PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)):
-        logger.critical(
-            "Отсутствуют обязательные переменные окружения: "
-            "PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID."
-        )
-        raise EnvVarsNotSetError(
-            "Отсутствуют обязательные переменные окружения!"
+    tokens = {
+        "PRACTICUM_TOKEN": PRACTICUM_TOKEN,
+        "TELEGRAM_TOKEN": TELEGRAM_TOKEN,
+        "TELEGRAM_CHAT_ID": TELEGRAM_CHAT_ID,
+    }
+    absent_tokens = [token for token in tokens if not tokens[token]]
+    if absent_tokens:
+        error_dispatcher(
+            f"Отсутствует одно или более обязательных"
+            f" переменных окружения: {absent_tokens}",
+            EnvVarsNotSetError,
+            critical=True,
         )
 
 
@@ -70,9 +82,9 @@ def send_message(bot: TeleBot, message: str) -> None:
     """
     try:
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
-        logger.debug(f"Успешно отправлено сообщение: {message}")
+        logging.debug(f"Успешно отправлено сообщение: {message}")
     except Exception as error:
-        logger.error(f"Возникла ошибка при отправке сообщения: {error}")
+        logging.error(f"Возникла ошибка при отправке сообщения: {error}")
 
 
 def get_api_answer(timestamp: int) -> dict:
@@ -87,21 +99,19 @@ def get_api_answer(timestamp: int) -> dict:
         response = requests.get(url=ENDPOINT, headers=headers, params=params)
         assert response.status_code == 200
         response_json = response.json()
-        logger.debug(
+        logging.debug(
             f"Выполнен запрос к {ENDPOINT}: Статус: {response.status_code}"
         )
         return response_json
     except JSONDecodeError as error:
-        logger.error(
-            f"Возникла ошибка при декодировании ответа {ENDPOINT}: \n{error}"
+        error_dispatcher(
+            f"Возникла ошибка при декодировании ответа {ENDPOINT}: \n{error}",
+            error,
         )
-        raise error
     except requests.RequestException as error:
-        logger.error(f"Возникла ошибка при обращении {ENDPOINT}: \n{error}")
-        raise AssertionError(
-            "При запросе к API возникло исключение "
-            "`requests.RequestException`."
-        ) from error
+        error_dispatcher(
+            f"Возникла ошибка при запросе к API {ENDPOINT}: \n{error}", error
+        )
 
 
 def check_response(response: dict):
@@ -114,37 +124,57 @@ def check_response(response: dict):
     :raises CheckResponseError: Если есть ошибка ответа.
     """
     if not isinstance(response, dict):
-        raise TypeError("Ответ должен быть словарем")
+        resp_type = type(response)
+        error_dispatcher(
+            f"Ответ должен быть словарем, но получили {resp_type}.", TypeError
+        )
 
     if "homeworks" not in response:
-        raise CheckHomeworkError("Отсутствует ключ 'homeworks' в ответе")
+        error_dispatcher(
+            "Отсутствует ключ 'homeworks' в ответе", CheckHomeworkError
+        )
 
     if not isinstance(response["homeworks"], list):
-        raise TypeError("Значение по ключу 'homeworks' должно быть списком")
+        hw_type = type(response["homeworks"])
+        error_dispatcher(
+            f"Значение по ключу 'homeworks' должно "
+            f"быть списком, но получили {hw_type}.",
+            TypeError,
+        )
 
-    error = response.get("error")
-    if error:
-        raise CheckRequestError(f"Ошибка при запросе: {error}")
+    if "error" in response:
+        error_dispatcher(
+            f"Ошибка при запросе: {response['error']}", CheckRequestError
+        )
 
-    code = response.get("code")
-    if code:
+    if "code" in response:
         source = response.get("source", "неизвестный источник")
         message = response.get("message", "нет сообщения об ошибке")
-        raise CheckResponseError(f"В {source} произошла ошибка {message}")
+        error_dispatcher(
+            f"В {source} произошла ошибка {message}", CheckResponseError
+        )
 
     required = ["status", "homework_name"]
     missing = [
         key for key in required if key not in response["homeworks"][-1].keys()
     ]
     if missing:
-        raise CheckRequiredFieldsError(
-            f"Отсутствуют обязательные ключи в элементе 'homeworks': {missing}"
+        error_dispatcher(
+            f"Отсутствуют обязательные ключи в "
+            f"элементе 'homeworks': {missing}",
+            CheckRequiredFieldsError,
         )
 
-    current_date = response.get("current_date")
-    if current_date is None or not isinstance(current_date, int):
-        raise CheckHomeworkError(
-            "Ключ 'current_date' должен быть целым числом"
+    current_date = response.get("current_date", None)
+    if current_date is None:
+        error_dispatcher(
+            "Отсутствует ключ 'current_date' в ответе", CheckHomeworkError
+        )
+    if not isinstance(current_date, int):
+        error_dispatcher(
+            f"Ключ 'current_date' должен быть целым числом. "
+            f"Получили: {current_date} типа {type(current_date)}",
+            CheckHomeworkError,
         )
 
 
@@ -157,20 +187,20 @@ def parse_status(homework: dict) -> Union[str, None]:
     actual_status = homework["status"]
     try:
         homework_name = homework["homework_name"]
-    except KeyError as error:
-        raise AssertionError(
-            "В ответе API нет ключа homework_name"
-        ) from error
+    except KeyError:
+        error_dispatcher("В ответе API нет ключа homework_name", KeyError)
     if actual_status not in HOMEWORK_VERDICTS:
-        message = f"Недокументированный статус: {actual_status}"
-        logger.error(message)
-        raise CheckStatusExpectedError(message)
+        error_dispatcher(
+            f"Недокументированный статус: {actual_status}",
+            CheckStatusExpectedError,
+        )
     if actual_status != LAST_HOMEWORK_STATUS and actual_status is not None:
         verdict = HOMEWORK_VERDICTS[actual_status]
-        return "Изменился статус проверки работы " \
-               f'"{homework_name}". {verdict}'
-    logger.debug(f"Статус {actual_status} не изменился")
-    return f"Статус проверки работы {homework_name} остался прежним."
+        return (
+            "Изменился статус проверки работы "
+            f'"{homework_name}". {verdict}'
+        )
+    logging.debug(f"Статус {actual_status} не изменился")
 
 
 def main():
@@ -180,21 +210,47 @@ def main():
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
     global LAST_HOMEWORK_STATUS
+    last_tg_error = str()
 
     while True:
         try:
             response = get_api_answer(timestamp=timestamp)
             check_response(response=response)
-            changes = parse_status(response["homeworks"][0])
-            if "Изменился статус проверки" in changes:
+            changes = parse_status(response["homeworks"][-1])
+            if changes:
                 timestamp = response["current_date"]
                 send_message(bot=bot, message=changes)
             LAST_HOMEWORK_STATUS = changes
         except Exception as error:
             message = f"Сбой в работе программы: {error}"
-            logger.critical(message)
+            if message != last_tg_error:
+                send_message(bot=bot, message=message)
+                last_tg_error = message
+            logging.critical(message)
         time.sleep(RETRY_PERIOD)
 
 
 if __name__ == "__main__":
+    # Настройка логгера
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="[%(funcName)s:%(lineno)d] %(asctime)s "
+               "%(name)s [%(levelname)s]: %(message)s",
+    )
+    file_log = "tg_bot.log"
+    handler = RotatingFileHandler(
+        filename=file_log,
+        encoding="utf-8",
+        mode="a",
+        maxBytes=1000000,
+        backupCount=5,
+    )
+    formatter = logging.Formatter(
+        "[%(funcName)s:%(lineno)d] %(asctime)s [%(levelname)s]: %(message)s"
+    )
+    handler.setFormatter(formatter)
+    logger = logging.getLogger(__name__)
+    logger.addHandler(handler)
+
+    # Запускаем бота
     main()
