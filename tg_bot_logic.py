@@ -3,17 +3,17 @@ import os
 import time
 from json import JSONDecodeError
 from logging.handlers import RotatingFileHandler
-from typing import Union
+from typing import Any, Union
 
 import requests
 from dotenv import load_dotenv
 from telebot import TeleBot
 
 from exceptions import (
-    CheckHomeworkError,
     CheckRequestError,
     CheckRequiredFieldsError,
     CheckResponseError,
+    CheckReviewError,
     CheckStatusExpectedError,
     EnvVarsNotSetError,
 )
@@ -29,17 +29,15 @@ RETRY_PERIOD = 600
 ENDPOINT = "https://practicum.yandex.ru/api/user_api/homework_statuses/"
 HEADERS = {"Authorization": f"OAuth {PRACTICUM_TOKEN}"}
 
-HOMEWORK_VERDICTS = {
+WORK_VERDICTS = {
     "approved": "Работа проверена: ревьюеру всё понравилось. Ура!",
     "reviewing": "Работа взята на проверку ревьюером.",
     "rejected": "Работа проверена: у ревьюера есть замечания.",
 }
-LAST_HOMEWORK_STATUS = None
+LAST_WORK_STATUS = None
 
 
-def error_dispatcher(
-    msg: str, error=Exception, critical: bool = False
-) -> None:
+def error_dispatcher(msg: str, error=Any, critical: bool = False) -> None:
     """
     Обработчик ошибок. Логирует ошибку и выбрасывает исключение.
     :param msg: Сообщение об ошибке.
@@ -99,9 +97,7 @@ def get_api_answer(timestamp: int) -> dict:
         response = requests.get(url=ENDPOINT, headers=headers, params=params)
         assert response.status_code == 200
         response_json = response.json()
-        logging.debug(
-            f"Выполнен запрос к {ENDPOINT}: Статус: {response.status_code}"
-        )
+        logging.debug(f"Выполнен запрос к {ENDPOINT}: Статус: {response.status_code}")
         return response_json
     except JSONDecodeError as error:
         error_dispatcher(
@@ -119,7 +115,7 @@ def check_response(response: dict):
     Проверяет ответ на наличие ошибок и отсутствие домашних заданий.
 
     :param response: Ответ от сервера в виде словаря.
-    :raises CheckHomeworkError: Если отсутствуют домашки.
+    :raises CheckReviewError: Если отсутствуют домашки.
     :raises CheckRequestError: Если есть ошибка запроса.
     :raises CheckResponseError: Если есть ошибка ответа.
     """
@@ -130,9 +126,7 @@ def check_response(response: dict):
         )
 
     if "homeworks" not in response:
-        error_dispatcher(
-            "Отсутствует ключ 'homeworks' в ответе", CheckHomeworkError
-        )
+        error_dispatcher("Отсутствует ключ 'homeworks' в ответе", CheckReviewError)
 
     if not isinstance(response["homeworks"], list):
         hw_type = type(response["homeworks"])
@@ -143,63 +137,52 @@ def check_response(response: dict):
         )
 
     if "error" in response:
-        error_dispatcher(
-            f"Ошибка при запросе: {response['error']}", CheckRequestError
-        )
+        error_dispatcher(f"Ошибка при запросе: {response['error']}", CheckRequestError)
 
     if "code" in response:
         source = response.get("source", "неизвестный источник")
         message = response.get("message", "нет сообщения об ошибке")
-        error_dispatcher(
-            f"В {source} произошла ошибка {message}", CheckResponseError
-        )
+        error_dispatcher(f"В {source} произошла ошибка {message}", CheckResponseError)
 
     required = ["status", "homework_name"]
-    missing = [
-        key for key in required if key not in response["homeworks"][-1].keys()
-    ]
+    missing = [key for key in required if key not in response["homeworks"][-1].keys()]
     if missing:
         error_dispatcher(
-            f"Отсутствуют обязательные ключи в "
-            f"элементе 'homeworks': {missing}",
+            f"Отсутствуют обязательные ключи в " f"элементе 'homeworks': {missing}",
             CheckRequiredFieldsError,
         )
 
     current_date = response.get("current_date", None)
     if current_date is None:
-        error_dispatcher(
-            "Отсутствует ключ 'current_date' в ответе", CheckHomeworkError
-        )
+        error_dispatcher("Отсутствует ключ 'current_date' в ответе", CheckReviewError)
     if not isinstance(current_date, int):
         error_dispatcher(
             f"Ключ 'current_date' должен быть целым числом. "
             f"Получили: {current_date} типа {type(current_date)}",
-            CheckHomeworkError,
+            CheckReviewError,
         )
 
 
-def parse_status(homework: dict) -> Union[str, None]:
+def parse_status(review_work: dict) -> Union[str, None]:
     """
     Парсит статус домашней работы.
-    :param homework: Данные последнего ДЗ.
+    :param review_work: Данные последнего ДЗ.
     :raises CheckStatusExpectedError: Если статус не изменился.
     """
-    actual_status = homework["status"]
+    actual_status = review_work["status"]
     try:
-        homework_name = homework["homework_name"]
+        review_name = review_work["homework_name"]
     except KeyError:
         error_dispatcher("В ответе API нет ключа homework_name", KeyError)
-    if actual_status not in HOMEWORK_VERDICTS:
+        review_name = "Неизвестная работа"
+    if actual_status not in WORK_VERDICTS:
         error_dispatcher(
             f"Недокументированный статус: {actual_status}",
             CheckStatusExpectedError,
         )
-    if actual_status != LAST_HOMEWORK_STATUS and actual_status is not None:
-        verdict = HOMEWORK_VERDICTS[actual_status]
-        return (
-            "Изменился статус проверки работы "
-            f'"{homework_name}". {verdict}'
-        )
+    if actual_status != LAST_WORK_STATUS and actual_status is not None:
+        verdict = WORK_VERDICTS[actual_status]
+        return "Изменился статус проверки работы " f'"{review_name}". {verdict}'
     logging.debug(f"Статус {actual_status} не изменился")
 
 
@@ -209,7 +192,7 @@ def main():
     # Создаем объект класса бота
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
-    global LAST_HOMEWORK_STATUS
+    global LAST_WORK_STATUS
     last_tg_error = str()
 
     while True:
@@ -220,7 +203,7 @@ def main():
             if changes:
                 timestamp = response["current_date"]
                 send_message(bot=bot, message=changes)
-            LAST_HOMEWORK_STATUS = changes
+            LAST_WORK_STATUS = changes
         except Exception as error:
             message = f"Сбой в работе программы: {error}"
             if message != last_tg_error:
@@ -235,7 +218,7 @@ if __name__ == "__main__":
     logging.basicConfig(
         level=logging.DEBUG,
         format="[%(funcName)s:%(lineno)d] %(asctime)s "
-               "%(name)s [%(levelname)s]: %(message)s",
+        "%(name)s [%(levelname)s]: %(message)s",
     )
     file_log = "tg_bot.log"
     handler = RotatingFileHandler(

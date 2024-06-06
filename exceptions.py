@@ -2,7 +2,7 @@ class EnvVarsNotSetError(Exception):
     pass
 
 
-class CheckHomeworkError(Exception):
+class CheckReviewError(Exception):
     pass
 
 

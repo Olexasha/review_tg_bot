@@ -18,31 +18,33 @@ def current_timestamp():
 
 
 @pytest.fixture
-def homework_module():
-    import homework
-    return homework
+def tg_bot_logic_module():
+    import tg_bot_logic
+
+    return tg_bot_logic
 
 
 @pytest.fixture
 def random_message():
     def random_string(string_length=15):
         letters = string.ascii_letters
-        return ''.join(random.choice(letters) for _ in range(string_length))
+        return "".join(random.choice(letters) for _ in range(string_length))
+
     return random_string()
 
 
 @pytest.fixture
 def data_with_new_hw_status(random_timestamp):
     return {
-        'homeworks': [
+        "homeworks": [
             {
-                'id': 777777777,
-                'homework_name': 'hw123.zip',
-                'status': 'approved',
-                'reviewer_comment': 'Принято!',
-                'date_updated': '2021-04-11T10:31:09Z',
-                'lesson_name': 'Проект спринта: Деплой бота'
+                "id": 777777777,
+                "homework_name": "hw123.zip",
+                "status": "approved",
+                "reviewer_comment": "Принято!",
+                "date_updated": "2021-04-11T10:31:09Z",
+                "lesson_name": "Проект спринта: Деплой бота",
             }
         ],
-        'current_date': random_timestamp
+        "current_date": random_timestamp,
     }
